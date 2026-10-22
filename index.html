@@ -20,11 +20,12 @@ small{color:var(--dim)}
 <body>
 <div id="hud"></div>
 <div id="wrap">
-<canvas id="c" width="800" height="500"></canvas>
+<canvas id="c" width="800" height="500" role="img" aria-label="Game view. The maze is almost invisible by design. Play by sound; events are announced in text and speech."></canvas>
+<div id="sr" aria-live="polite" style="position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden"></div>
 <div id="ov"><h1 id="ovT">echo</h1>
 <p id="ovA">Put on headphones. You can barely see, so listen.</p>
 <p id="ovB">Find the low, steady tone: that is the exit. Something is hunting you in the dark.</p>
-<p id="ovC"><small>Move: WASD or arrows. Ping: Space (echoes show walls and hunters, but they hear it too). Strike: F. Left or right in your ears is left or right on the map. Higher pitch means further up. Press 1 to 9 to jump to a level.</small></p>
+<p id="ovC"><small>Move: WASD or arrows. Ping: Space (echoes show walls and hunters, but they hear it too). Strike: F. Left or right in your ears is left or right on the map. Higher pitch means further up. Press 1 to 9 to jump to a level. Fully playable without sight: events are spoken aloud. During play, H repeats your status and V turns the voice on or off, for screen reader users.</small></p>
 <p id="go">Click or press any key to start</p></div>
 </div>
 <small>Desktop keyboard needed. Every level builds a new maze.</small>
@@ -78,7 +79,12 @@ function sp(sx,sy){const dx=sx-P.x,dy=sy-P.y,d=Math.hypot(dx,dy);return{d,pan:Ma
 function tone(f,t,dur,gn,pan,type){const o=ac.createOscillator(),e=ac.createGain(),p=ac.createStereoPanner();o.type=type||'sine';o.frequency.value=f;p.pan.value=pan;e.gain.setValueAtTime(.0001,t);e.gain.linearRampToValueAtTime(gn,t+.012);e.gain.exponentialRampToValueAtTime(.0001,t+dur);o.connect(e);e.connect(p);p.connect(ac.destination);o.start(t);o.stop(t+dur+.05)}
 function thud(t,gn,pan,f){const n=ac.sampleRate*.12,b=ac.createBuffer(1,n,ac.sampleRate),d=b.getChannelData(0);for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);const s=ac.createBufferSource(),fl=ac.createBiquadFilter(),e=ac.createGain(),p=ac.createStereoPanner();s.buffer=b;fl.type='lowpass';fl.frequency.value=f;e.gain.value=gn;p.pan.value=pan;s.connect(fl);fl.connect(e);e.connect(p);p.connect(ac.destination);s.start(t)}
 function at(sx,sy,base,delay,gs,dur,type){const s=sp(sx,sy);tone(base*s.pitch,ac.currentTime+delay,dur,.35*s.gain*gs,s.pan,type)}
-function say(m){msg=m;msgT=3}
+let voice=true;
+function speak(t){const synth=window.speechSynthesis;
+ if(voice&&synth){synth.cancel();const u=new SpeechSynthesisUtterance(t);u.rate=1.1;synth.speak(u)}
+ else{const s=$('sr');s.textContent='';setTimeout(()=>s.textContent=t,60)}}
+function status(){speak('Level '+lv+'. '+lives+' lives. '+(pings===Infinity?'Unlimited pings.':pings+' pings left.')+(cfg.keys?' '+gotKeys+' of '+cfg.keys+' bells found.':'')+(gotKeys>=(cfg.keys||0)?' The exit is sounding.':' The exit is silent.'))}
+function say(m){msg=m;msgT=3;speak(m)}
 
 /* ---------- actions ---------- */
 function ping(){if(pingT>0||state!=='play')return;
@@ -93,7 +99,7 @@ function ping(){if(pingT>0||state!=='play')return;
 function strike(){if(strikeCd>0||state!=='play')return;strikeCd=.7;thud(ac.currentTime,.5,0,1500);
  for(const e of EN){const dx=e.x-P.x,dy=e.y-P.y,d=Math.hypot(dx,dy);
   if(d<56&&e.stun<=0&&(dx*P.fx+dy*P.fy)/d>.2){e.stun=5;e.next=null;tone(90,ac.currentTime,.4,.5,sp(e.x,e.y).pan,'sawtooth');say('Something dropped.')}}}
-function showOv(t,a,b,c,go){$('ovT').textContent=t;$('ovA').textContent=a;$('ovB').textContent=b;$('ovC').innerHTML='<small>'+c+'</small>';$('go').textContent=go;ov.style.display='flex'}
+function showOv(t,a,b,c,go){$('ovT').textContent=t;$('ovA').textContent=a;$('ovB').textContent=b;$('ovC').innerHTML='<small>'+c+'</small>';$('go').textContent=go;ov.style.display='flex';speak([t,a,b,go].join('. '))}
 function startLevel(n){if(!ac)ac=new (window.AudioContext||window.webkitAudioContext)();ac.resume();
  lv=n;cfg=cfgFor(n);M=buildMaze(cfg.cols,cfg.rows);
  const d0=bfs(0,M.rows-1),cells=[];let maxD=0;
@@ -112,7 +118,8 @@ function win(){tone(523,ac.currentTime,.8,.3,0);const done=lv,next=cfgFor(lv+1);
 function lose(){state='lose';showOv('lost','The dark closed in.','Same level, a brand new maze.','','Press any key to try again')}
 addEventListener('keydown',e=>{if(e.repeat)return;if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();K[e.code]=1;
  if(state!=='play'){const m=/^(Digit|Numpad)([1-9])$/.exec(e.code);startLevel(m?+m[2]:lv);return}
- if(e.code==='Space')ping();if(e.code==='KeyF')strike()});
+ if(e.code==='Space')ping();if(e.code==='KeyF')strike();if(e.code==='KeyH')status();
+ if(e.code==='KeyV'){voice=!voice;if(window.speechSynthesis)speechSynthesis.cancel();speak(voice?'Voice on.':'Voice off. Messages go to your screen reader.')}});
 addEventListener('keyup',e=>K[e.code]=0);ov.addEventListener('click',()=>{if(state!=='play')startLevel(lv)});
 
 /* ---------- update ---------- */
