@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Echo</title>
+<style>
+:root{--bg:#050608;--fg:#9aa7b4;--dim:#4b5663;--accent:#7fd6c8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:Georgia,"Times New Roman",serif}
+body{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+#wrap{position:relative;width:min(96vw,800px)}
+canvas{width:100%;height:auto;display:block;background:#000;border:1px solid #11161c}
+#hud{width:min(96vw,800px);font-size:.9rem;color:var(--dim);min-height:1.3em;letter-spacing:.03em}
+#ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;background:rgba(0,0,0,.9);padding:20px;gap:10px;cursor:pointer}
+#ov h1{margin:0;font-weight:400;font-size:2.4rem;letter-spacing:.2em;color:var(--accent)}
+#ov p{margin:0;max-width:48ch;line-height:1.5;font-size:.95rem}
+small{color:var(--dim)}
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="wrap">
+<canvas id="c" width="800" height="500"></canvas>
+<div id="ov"><h1 id="ovT">echo</h1>
+<p id="ovA">Put on headphones. You can barely see, so listen.</p>
+<p id="ovB">Find the low, steady tone: that is the exit. Something is hunting you in the dark.</p>
+<p id="ovC"><small>Move: WASD or arrows. Ping: Space (echoes show walls and hunters, but they hear it too). Strike: F. Left or right in your ears is left or right on the map. Higher pitch means further up. Press 1 to 9 to jump to a level.</small></p>
+<p id="go">Click or press any key to start</p></div>
+</div>
+<small>Desktop keyboard needed. Every level builds a new maze.</small>
+<script>
+const cv=document.getElementById('c'),g=cv.getContext('2d'),ov=document.getElementById('ov'),hud=document.getElementById('hud'),W=800,H=500;
+const $=id=>document.getElementById(id);
+const LEVELS=[
+ {name:'The Hollow',cols:8,rows:5,hunters:['heavy']},
+ {name:'Two Sounds',cols:10,rows:6,hunters:['heavy','light']},
+ {name:'Silent Exit',cols:12,rows:7,hunters:['heavy'],keys:3},
+ {name:'False Walls',cols:12,rows:8,hunters:['heavy'],fake:true},
+ {name:'Last Breath',cols:14,rows:8,hunters:['heavy','light'],pings:9}];
+const TY={heavy:{patrol:50,hunt:78,foot:.5,ff:500,fg:2.2,echo:[170,'square',.3,2.2]},light:{patrol:68,hunt:108,foot:.28,ff:1900,fg:1.5,echo:[430,'triangle',.18,2]}};
+function cfgFor(n){if(n<=5)return LEVELS[n-1];const k=n-5,hs=['heavy'];if(k%2)hs.push('light');if(k>2)hs.push(k%3?'heavy':'light');
+ const tw=[{},{keys:3},{fake:true},{pings:8+k}][n%4];return Object.assign({name:'Deeper '+k,cols:Math.min(16,12+k),rows:Math.min(10,8+Math.floor(k/2)),hunters:hs},tw)}
+function tipFor(c){const a=[];if(c.hunters.length>1)a.push(c.hunters.length+' hunters.');if(c.keys)a.push('Find '+c.keys+' bells. The exit stays silent until then.');if(c.fake)a.push('Some echoes lie.');if(c.pings)a.push('Only '+c.pings+' pings.');return a.join(' ')||'Find the low tone.'}
+const K={};let ac,M,P,EN,exit,keys,gotKeys,lives,state='menu',lv=1,cfg,last=0,pingT=0,pings=0,pingFlash=[],ring=0,strikeCd=0,inv=0,beaconT=0,keyT=0,heardT=0,msg='',msgT=0;
+
+/* ---------- maze ---------- */
+function buildMaze(cols,rows){
+ const cs=Math.floor(Math.min(W/cols,H/rows)),ox=(W-cs*cols)/2,oy=(H-cs*rows)/2,t=10;
+ const mk=()=>[...Array(rows)].map(()=>Array(cols).fill(false)),right=mk(),down=mk(),seen=mk();
+ const op=(c,r,x,y)=>{if(x>c)right[r][c]=true;else if(x<c)right[y][x]=true;else if(y>r)down[r][c]=true;else down[y][x]=true};
+ const st=[[0,rows-1]];seen[rows-1][0]=true;
+ while(st.length){const [c,r]=st[st.length-1];
+  const nb=[[1,0],[-1,0],[0,1],[0,-1]].map(d=>[c+d[0],r+d[1]]).filter(([x,y])=>x>=0&&y>=0&&x<cols&&y<rows&&!seen[y][x]);
+  if(!nb.length){st.pop();continue}
+  const [x,y]=nb[Math.floor(Math.random()*nb.length)];op(c,r,x,y);seen[y][x]=true;st.push([x,y])}
+ for(let i=0;i<cols*rows*.12;i++){const c=Math.floor(Math.random()*cols),r=Math.floor(Math.random()*rows);
+  if(Math.random()<.5&&c<cols-1)right[r][c]=true;else if(r<rows-1)down[r][c]=true}
+ const walls=[[ox-t/2,oy-t/2,cs*cols+t,t],[ox-t/2,oy+cs*rows-t/2,cs*cols+t,t],[ox-t/2,oy-t/2,t,cs*rows+t],[ox+cs*cols-t/2,oy-t/2,t,cs*rows+t]];
+ for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+  if(c<cols-1&&!right[r][c])walls.push([ox+(c+1)*cs-t/2,oy+r*cs-t/2,t,cs+t]);
+  if(r<rows-1&&!down[r][c])walls.push([ox+c*cs-t/2,oy+(r+1)*cs-t/2,cs+t,t])}
+ return{cols,rows,cs,ox,oy,right,down,walls,dc:{}}}
+function nbrs(c,r){const o=[];if(M.right[r][c])o.push([c+1,r]);if(c>0&&M.right[r][c-1])o.push([c-1,r]);if(M.down[r][c])o.push([c,r+1]);if(r>0&&M.down[r-1][c])o.push([c,r-1]);return o}
+function bfs(c0,r0){const key=c0+','+r0;if(M.dc[key])return M.dc[key];
+ const d=[...Array(M.rows)].map(()=>Array(M.cols).fill(-1));d[r0][c0]=0;const q=[[c0,r0]];
+ for(let i=0;i<q.length;i++){const [c,r]=q[i];for(const [x,y] of nbrs(c,r))if(d[y][x]<0){d[y][x]=d[r][c]+1;q.push([x,y])}}
+ return M.dc[key]=d}
+const cellOf=(x,y)=>[Math.max(0,Math.min(M.cols-1,Math.floor((x-M.ox)/M.cs))),Math.max(0,Math.min(M.rows-1,Math.floor((y-M.oy)/M.cs)))];
+const ctr=(c,r)=>[M.ox+(c+.5)*M.cs,M.oy+(r+.5)*M.cs];
+function stepToward(cc,goal){if(cc[0]===goal[0]&&cc[1]===goal[1])return null;const d=bfs(goal[0],goal[1]);let best=null,bd=1e9;
+ for(const [x,y] of nbrs(cc[0],cc[1]))if(d[y][x]>=0&&d[y][x]<bd){bd=d[y][x];best=[x,y]}return best}
+function hitW(x,y,r){const w=M.walls;for(let i=0;i<w.length;i++){const a=w[i][0],b=w[i][1],cx=Math.max(a,Math.min(x,a+w[i][2])),cy=Math.max(b,Math.min(y,b+w[i][3]));if((x-cx)*(x-cx)+(y-cy)*(y-cy)<r*r)return true}return false}
+function clear(ax,ay,bx,by){const d=Math.hypot(bx-ax,by-ay),n=Math.ceil(d/6);for(let i=1;i<n;i++)if(hitW(ax+(bx-ax)*i/n,ay+(by-ay)*i/n,1))return false;return true}
+function ray(a,max){let d=0;const dx=Math.cos(a),dy=Math.sin(a);while(d<max){d+=5;if(hitW(P.x+dx*d,P.y+dy*d,1))return d}return 0}
+
+/* ---------- audio ---------- */
+function sp(sx,sy){const dx=sx-P.x,dy=sy-P.y,d=Math.hypot(dx,dy);return{d,pan:Math.max(-1,Math.min(1,dx/220)),pitch:Math.pow(2,-dy/320),gain:1/(1+d/140)}}
+function tone(f,t,dur,gn,pan,type){const o=ac.createOscillator(),e=ac.createGain(),p=ac.createStereoPanner();o.type=type||'sine';o.frequency.value=f;p.pan.value=pan;e.gain.setValueAtTime(.0001,t);e.gain.linearRampToValueAtTime(gn,t+.012);e.gain.exponentialRampToValueAtTime(.0001,t+dur);o.connect(e);e.connect(p);p.connect(ac.destination);o.start(t);o.stop(t+dur+.05)}
+function thud(t,gn,pan,f){const n=ac.sampleRate*.12,b=ac.createBuffer(1,n,ac.sampleRate),d=b.getChannelData(0);for(let i=0;i<n;i++)d[i]=(Math.random()*2-1)*(1-i/n);const s=ac.createBufferSource(),fl=ac.createBiquadFilter(),e=ac.createGain(),p=ac.createStereoPanner();s.buffer=b;fl.type='lowpass';fl.frequency.value=f;e.gain.value=gn;p.pan.value=pan;s.connect(fl);fl.connect(e);e.connect(p);p.connect(ac.destination);s.start(t)}
+function at(sx,sy,base,delay,gs,dur,type){const s=sp(sx,sy);tone(base*s.pitch,ac.currentTime+delay,dur,.35*s.gain*gs,s.pan,type)}
+function say(m){msg=m;msgT=3}
+
+/* ---------- actions ---------- */
+function ping(){if(pingT>0||state!=='play')return;
+ if(pings<=0){thud(ac.currentTime,.15,0,200);say('No breath left.');return}
+ if(pings!==Infinity)pings--;
+ pingT=1.2;heardT=2.5;ring=0;pingFlash=[];tone(1100,ac.currentTime,.08,.25,0);
+ for(let i=0;i<14;i++){const a=i/14*Math.PI*2,d=ray(a,420);if(!d)continue;if(cfg.fake&&Math.random()<.35)continue;
+  const hx=P.x+Math.cos(a)*d,hy=P.y+Math.sin(a)*d;pingFlash.push([hx,hy,1]);at(hx,hy,780,d/260*(cfg.fake?.7+Math.random()*.7:1),.9,.14)}
+ if(cfg.fake)for(let i=0;i<5;i++){const a=Math.random()*6.28,d=90+Math.random()*310,hx=P.x+Math.cos(a)*d,hy=P.y+Math.sin(a)*d;pingFlash.push([hx,hy,1]);at(hx,hy,780,d/260,.9,.14)}
+ for(const e of EN){if(e.stun>0)continue;const s=sp(e.x,e.y);if(s.d>=420)continue;const j=cfg.fake?(Math.random()-.5)*160:0,ex=e.x+j,ey=e.y+j*.6,c=TY[e.type].echo;
+  pingFlash.push([ex,ey,1,1]);at(ex,ey,c[0],s.d/260,c[3],c[2],c[1])}}
+function strike(){if(strikeCd>0||state!=='play')return;strikeCd=.7;thud(ac.currentTime,.5,0,1500);
+ for(const e of EN){const dx=e.x-P.x,dy=e.y-P.y,d=Math.hypot(dx,dy);
+  if(d<56&&e.stun<=0&&(dx*P.fx+dy*P.fy)/d>.2){e.stun=5;e.next=null;tone(90,ac.currentTime,.4,.5,sp(e.x,e.y).pan,'sawtooth');say('Something dropped.')}}}
+function showOv(t,a,b,c,go){$('ovT').textContent=t;$('ovA').textContent=a;$('ovB').textContent=b;$('ovC').innerHTML='<small>'+c+'</small>';$('go').textContent=go;ov.style.display='flex'}
+function startLevel(n){if(!ac)ac=new (window.AudioContext||window.webkitAudioContext)();ac.resume();
+ lv=n;cfg=cfgFor(n);M=buildMaze(cfg.cols,cfg.rows);
+ const d0=bfs(0,M.rows-1),cells=[];let maxD=0;
+ for(let r=0;r<M.rows;r++)for(let c=0;c<M.cols;c++){cells.push([c,r]);maxD=Math.max(maxD,d0[r][c])}
+ const used=new Set(['0,'+(M.rows-1)]);
+ const pick=f=>{const pool=cells.filter(([c,r])=>d0[r][c]>=f*maxD&&!used.has(c+','+r));const p=pool[Math.floor(Math.random()*pool.length)]||cells[1];used.add(p[0]+','+p[1]);return p};
+ const ec=cells.find(([c,r])=>d0[r][c]===maxD);used.add(ec[0]+','+ec[1]);[exit]=[{x:ctr(...ec)[0],y:ctr(...ec)[1]}];
+ keys=[];for(let i=0;i<(cfg.keys||0);i++){const k=pick(.45),p=ctr(...k);keys.push({x:p[0],y:p[1],got:false})}
+ gotKeys=0;
+ EN=cfg.hunters.map(type=>{const k=pick(.4),p=ctr(...k);return{type,x:p[0],y:p[1],stun:0,next:null,goal:null,st:0}});
+ const sc=ctr(0,M.rows-1);P={x:sc[0],y:sc[1],fx:1,fy:0};
+ lives=3;pings=cfg.pings||Infinity;pingT=0;pingFlash=[];heardT=0;inv=0;beaconT=0;keyT=0;msg='';state='play';ov.style.display='none';
+ say('Level '+n+': '+cfg.name+'. '+tipFor(cfg))}
+function win(){tone(523,ac.currentTime,.8,.3,0);const done=lv,next=cfgFor(lv+1);lv++;state='clear';
+ showOv('out','Level '+done+' cleared.','Next: level '+lv+', '+next.name+'. '+tipFor(next),'A brand new maze every time. Press 1 to 9 to jump to a level.','Press any key to continue')}
+function lose(){state='lose';showOv('lost','The dark closed in.','Same level, a brand new maze.','','Press any key to try again')}
+addEventListener('keydown',e=>{if(e.repeat)return;if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code))e.preventDefault();K[e.code]=1;
+ if(state!=='play'){const m=/^(Digit|Numpad)([1-9])$/.exec(e.code);startLevel(m?+m[2]:lv);return}
+ if(e.code==='Space')ping();if(e.code==='KeyF')strike()});
+addEventListener('keyup',e=>K[e.code]=0);ov.addEventListener('click',()=>{if(state!=='play')startLevel(lv)});
+
+/* ---------- update ---------- */
+function updHunter(e,dt){
+ e.stun-=dt;if(e.stun>0)return;const T=TY[e.type],s=sp(e.x,e.y);
+ const see=clear(P.x,P.y,e.x,e.y)&&s.d<(e.type==='light'?240:200),hear=heardT>0&&s.d<420;
+ let tx,ty,spd=T.patrol;
+ if(see){tx=P.x;ty=P.y;spd=heardT>0?T.hunt*1.25:T.hunt;e.next=null}
+ else{const cc=cellOf(e.x,e.y);if(hear){e.goal=cellOf(P.x,P.y);spd=T.hunt}
+  if(!e.next||(e.x===ctr(...e.next)[0]&&e.y===ctr(...e.next)[1])){
+   if(!e.goal||(cc[0]===e.goal[0]&&cc[1]===e.goal[1]))e.goal=[Math.floor(Math.random()*M.cols),Math.floor(Math.random()*M.rows)];
+   e.next=stepToward(cc,e.goal)||cc}
+  [tx,ty]=ctr(...e.next)}
+ const dx=tx-e.x,dy=ty-e.y,d=Math.hypot(dx,dy),step=spd*dt;
+ if(d<=step){e.x=tx;e.y=ty}else{e.x+=dx/d*step;e.y+=dy/d*step}
+ e.st-=dt;if(e.st<=0){e.st=T.foot;if(s.d<360)thud(ac.currentTime,Math.min(1,T.fg*s.gain),s.pan,T.ff*s.pitch)}
+ if(s.d<20&&inv<=0){lives--;inv=1.5;e.stun=1.2;e.next=null;tone(70,ac.currentTime,.5,.6,0,'sawtooth');say('It found you.');if(lives<=0)lose()}}
+function update(dt){
+ const dx=(K.KeyD||K.ArrowRight?1:0)-(K.KeyA||K.ArrowLeft?1:0),dy=(K.KeyS||K.ArrowDown?1:0)-(K.KeyW||K.ArrowUp?1:0),l=Math.hypot(dx,dy)||1;
+ if(dx||dy){P.fx=dx/l;P.fy=dy/l;const nx=P.x+P.fx*130*dt,ny=P.y+P.fy*130*dt;let b=false;
+  if(!hitW(nx,P.y,9))P.x=nx;else b=true;if(!hitW(P.x,ny,9))P.y=ny;else b=true;if(b&&Math.random()<.08)thud(ac.currentTime,.3,0,300)}
+ pingT-=dt;strikeCd-=dt;inv-=dt;heardT-=dt;ring+=dt;beaconT-=dt;keyT-=dt;msgT-=dt;
+ const open=gotKeys>=(cfg.keys||0);
+ if(open&&beaconT<=0){beaconT=1.1;const s=sp(exit.x,exit.y);tone(196*s.pitch,ac.currentTime,.9,.5*Math.max(s.gain,.25),s.pan,'triangle')}
+ if(keyT<=0){keyT=1.2;keys.forEach((k,i)=>{if(k.got)return;const s=sp(k.x,k.y);tone(880*s.pitch,ac.currentTime+i*.3,.5,.4*Math.max(s.gain,.2),s.pan,'sine')})}
+ for(const k of keys)if(!k.got&&Math.hypot(k.x-P.x,k.y-P.y)<16){k.got=true;gotKeys++;tone(1320,ac.currentTime,.4,.4,0);tone(1760,ac.currentTime+.12,.5,.3,0);
+  if(gotKeys>=cfg.keys){say('The way opens.');tone(196,ac.currentTime+.3,1.2,.5,0,'triangle')}else say('Bell '+gotKeys+' of '+cfg.keys+'.')}
+ EN.forEach(e=>updHunter(e,dt));
+ if(state==='play'&&Math.hypot(exit.x-P.x,exit.y-P.y)<18){if(open)win();else if(msgT<=0){say('Sealed.');thud(ac.currentTime,.4,0,200)}}}
+
+/* ---------- draw ---------- */
+function draw(){g.fillStyle='#000';g.fillRect(0,0,W,H);
+ if(state==='menu'||!M)return;
+ g.fillStyle='rgba(120,150,170,.035)';M.walls.forEach(r=>g.fillRect(...r));
+ pingFlash.forEach(f=>{f[2]-=.012;if(f[2]>0){g.fillStyle=f[3]?`rgba(230,110,90,${f[2]*.7})`:`rgba(127,214,200,${f[2]*.55})`;g.beginPath();g.arc(f[0],f[1],f[3]?7:3,0,7);g.fill()}});
+ if(ring<.9&&pingT>0){g.strokeStyle=`rgba(127,214,200,${.35*(1-ring/.9)})`;g.beginPath();g.arc(P.x,P.y,ring*470,0,7);g.stroke()}
+ if(state==='play'){g.fillStyle=inv>0&&Math.floor(inv*10)%2?'#2a3138':'#9aa7b4';g.beginPath();g.arc(P.x,P.y,5,0,7);g.fill();
+  g.strokeStyle='#3a444e';g.beginPath();g.moveTo(P.x,P.y);g.lineTo(P.x+P.fx*12,P.y+P.fy*12);g.stroke()}
+ hud.textContent='Level '+lv+' '+cfg.name+'   lives '+lives+'   ping '+(pings===Infinity?(pingT>0?'...':'ready'):pings+' left')+(cfg.keys?'   bells '+gotKeys+'/'+cfg.keys:'')+(msgT>0?'   '+msg:'')}
+function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;if(state==='play')update(dt);draw();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
